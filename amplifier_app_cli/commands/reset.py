@@ -42,6 +42,7 @@ from amplifier_foundation.paths.resolution import get_amplifier_home
 from ..console import console
 from ..utils.error_format import escape_markup
 from ..utils.fs_utils import rmtree_robust
+from ..utils.uv_utils import CleanupStep
 from ..utils.uv_utils import UvStep, defer_uv_tool_swap
 from ..utils.uv_utils import remove_stale_uv_lock as _remove_stale_uv_lock
 from .reset_interactive import ChecklistItem, run_checklist
@@ -533,11 +534,28 @@ def _install_amplifier(dry_run: bool = False) -> bool:
         return False
 
 
-def _windows_defer_tool_swap(no_install: bool) -> bool:
-    """Hand the uv tool uninstall/reinstall to a script that runs after we exit.
+def _windows_cleanup_steps(
+    remove_cats: set[str], *, full: bool
+) -> list[CleanupStep]:
+    """Materialize the exact user-confirmed paths for the Windows finisher."""
+    amplifier_dir = _get_amplifier_dir()
+    if full:
+        return [CleanupStep(amplifier_dir, "Removing all Amplifier data...")]
+    return [
+        CleanupStep(amplifier_dir / path_name, f"Removing {path_name}...")
+        for path_name in sorted(_get_remove_paths(remove_cats))
+    ]
 
-    See ``defer_uv_tool_swap`` for why Windows needs this at all. Reset's shape
-    is an uninstall, followed (unless ``--no-install``) by a fresh install.
+
+def _windows_defer_tool_swap(
+    no_install: bool, cleanup_steps: list[CleanupStep] | None = None
+) -> bool:
+    """Hand selected cleanup and uv tool replacement to a post-exit script.
+
+    See ``defer_uv_tool_swap`` for why Windows needs this at all. The selected
+    cleanup runs first: deleting a cache from the live process can fail while a
+    file is still delete-pending, and uninstalling before cleanup would strand
+    the user if that cleanup cannot finish.
 
     Returns:
         True only when the deferred script was launched successfully.
@@ -558,7 +576,7 @@ def _windows_defer_tool_swap(no_install: bool) -> bool:
         uninstall_required = True
 
     if no_install:
-        if not uninstall_packages:
+        if not uninstall_packages and not cleanup_steps:
             console.print("    [dim]Amplifier is not installed via uv tool[/dim]")
             return True
 
@@ -606,6 +624,7 @@ def _windows_defer_tool_swap(no_install: bool) -> bool:
         ],
         success_message=success,
         recovery_commands=recovery,
+        cleanup_steps=cleanup_steps or (),
     )
 
     if not launched:
@@ -736,8 +755,9 @@ def reset(
             console.print("[yellow]Cancelled.[/yellow]")
             return
 
-    # Execute reset steps. Cache clean and ~/.amplifier cleanup are safe to run
-    # in-process on every OS (neither touches the running uv tool environment).
+    # Execute reset steps. uv cache cleanup does not touch the running tool
+    # environment, but Windows must defer ~/.amplifier cleanup itself: a
+    # delete-pending cache entry can make an in-process recursive delete fail.
     _clean_uv_cache(dry_run)
 
     # Windows self-modification guard: on Windows the live amplifier.exe and its
@@ -747,12 +767,8 @@ def reset(
     # runs after this process exits. POSIX unlinks open files, so the path below
     # is unchanged there.
     if os.name == "nt" and not dry_run:
-        if not _remove_amplifier_dir(remove_cats, full=full, dry_run=dry_run):
-            raise click.ClickException(
-                "Reset stopped because cleanup was incomplete; "
-                "no reinstall was staged."
-            )
-        if not _windows_defer_tool_swap(no_install):
+        cleanup_steps = _windows_cleanup_steps(remove_cats, full=full)
+        if not _windows_defer_tool_swap(no_install, cleanup_steps):
             raise click.ClickException("Reset could not be staged.")
         return
 
